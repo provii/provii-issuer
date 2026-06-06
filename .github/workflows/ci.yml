@@ -1,0 +1,697 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
+      - 'CHANGELOG*'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
+      - '.gitignore'
+      - 'CHANGELOG*'
+  workflow_dispatch:
+    inputs:
+      deploy_environment:
+        description: 'Deploy to environment (or none for CI only)'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - sandbox
+          - production
+
+permissions:
+  contents: read
+  actions: read    # Required for SLSA provenance
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  # === Linting and Formatting ===
+  lint:
+    name: Lint and Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-lint"
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Check TOML formatting
+        run: |
+          cargo install taplo-cli --version '=0.9.3' --locked
+          taplo fmt --check
+
+      - name: Check for unused dependencies
+        run: |
+          cargo install cargo-machete --version '=0.7.0' --locked
+          cargo machete
+
+      - name: Run clippy
+        # Use native target for full linting including test code
+        run: cargo clippy --workspace --all-features --locked --target x86_64-unknown-linux-gnu -- -D warnings
+
+  # === Testing ===
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-test"
+
+      - name: Run unit tests
+        # Override the default wasm32 target set in .cargo/config.toml
+        run: cargo test --workspace --lib --all-features --locked --target x86_64-unknown-linux-gnu
+
+      - name: Run integration tests
+        # Override the default wasm32 target set in .cargo/config.toml
+        run: cargo test --workspace --test '*' --all-features --locked --target x86_64-unknown-linux-gnu
+
+      - name: Reject skeleton tests
+        run: |
+          if grep -Pzo '(?s)#\[test\]\s*fn\s+\w+[^{]*\{[^;{}]*\}' tests/*.rs 2>/dev/null; then
+            echo "ERROR: Skeleton test detected (test body contains no statements)"
+            exit 1
+          fi
+
+      - name: Build check (WASM target)
+        run: cargo check --target wasm32-unknown-unknown --all-features --locked
+
+  # === Test Coverage ===
+  test-coverage:
+    name: Test Coverage
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-coverage"
+
+      - name: Install cargo-llvm-cov
+        run: which cargo-llvm-cov || cargo install cargo-llvm-cov --version '=0.6.16' --locked
+
+      - name: Generate coverage report
+        # Coverage is measured across the full workspace, including the
+        # `issuer-logic` crate which contains all extracted pure business
+        # logic (AES-GCM envelope crypto, identifier validation, prefix
+        # rejection, session-ID redaction, rate-limit helpers, secret
+        # fingerprints). This logic was previously trapped inside excluded
+        # Worker files and not measured.
+        #
+        # Three categories of exclusion:
+        #
+        # 1. Worker-only files: every function takes `worker::Env`,
+        #    `worker::Request`, KV/DO stubs, or other wasm32-only types.
+        #    These contain only thin delegation wrappers into issuer-logic.
+        #    The pattern uses `issuer/src/` to avoid accidentally excluding
+        #    the identically-named crates/issuer-logic/src/ counterparts.
+        #
+        # 2. Sibling path dependencies (provii-crypto, provii-audit): cloned
+        #    at build time for type sharing. They have their own coverage
+        #    gates in their own repos. cargo-llvm-cov 0.6.x instruments
+        #    them transitively, inflating the denominator with uncovered
+        #    external code.
+        #
+        # Worker-only files excluded:
+        # bindings.rs, fetch_metadata.rs, durable_objects/nonce_do.rs,
+        # durable_objects/resource_lock.rs, resource_lock.rs, secret_cache.rs,
+        # lib.rs, routes.rs, health.rs, analytics.rs, kek.rs, audit.rs,
+        # internal_admin.rs, routes_sandbox_cred.rs, key_rotation.rs,
+        # session.rs, security/client_auth.rs, security/prefix_rejection.rs,
+        # internal_version.rs, storage.rs, rate_limiting.rs, logging.rs,
+        # session_security.rs, secret_fingerprint.rs.
+        run: |
+          cargo llvm-cov --workspace --all-features --target x86_64-unknown-linux-gnu --locked --lcov --output-path lcov.info \
+            --ignore-filename-regex 'provii-crypto/|provii-audit/|(issuer/src/bindings\.rs|issuer/src/fetch_metadata\.rs|issuer/src/durable_objects/nonce_do\.rs|issuer/src/durable_objects/resource_lock\.rs|issuer/src/resource_lock\.rs|issuer/src/secret_cache\.rs|issuer/src/lib\.rs|issuer/src/routes\.rs|issuer/src/health\.rs|issuer/src/analytics\.rs|issuer/src/kek\.rs|issuer/src/audit\.rs|issuer/src/internal_admin\.rs|issuer/src/routes_sandbox_cred\.rs|issuer/src/key_rotation\.rs|issuer/src/session\.rs|issuer/src/security/client_auth\.rs|issuer/src/security/prefix_rejection\.rs|issuer/src/internal_version\.rs|issuer/src/storage\.rs|issuer/src/rate_limiting\.rs|issuer/src/logging\.rs|issuer/src/session_security\.rs|issuer/src/secret_fingerprint\.rs)$'
+
+      - name: Check coverage threshold
+        run: |
+          LINES_FOUND=$(grep "^LF:" lcov.info | cut -d: -f2 | paste -sd+ | bc)
+          LINES_HIT=$(grep "^LH:" lcov.info | cut -d: -f2 | paste -sd+ | bc)
+          if [ "$LINES_FOUND" -eq 0 ]; then
+            COVERAGE="0"
+          else
+            COVERAGE=$(echo "scale=2; $LINES_HIT * 100 / $LINES_FOUND" | bc)
+          fi
+          echo "Coverage: ${COVERAGE}% (${LINES_HIT}/${LINES_FOUND} lines)"
+          echo "## Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "Line coverage: **${COVERAGE}%** (${LINES_HIT}/${LINES_FOUND} lines)" >> $GITHUB_STEP_SUMMARY
+
+          THRESHOLD=85
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "::error::Coverage ${COVERAGE}% is below threshold of ${THRESHOLD}%"
+            echo "Status: Below ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "Coverage ${COVERAGE}% meets threshold of ${THRESHOLD}%"
+            echo "Status: Meets ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # === Miri - Undefined Behavior Detection ===
+  miri:
+    name: Miri (UB Detection)
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust nightly with Miri
+        run: |
+          # AUD-IA-19a-010: Pin nightly to a specific date for reproducibility
+          rustup toolchain install nightly-2026-05-01 --component miri
+          rustup override set nightly-2026-05-01
+          cargo miri setup
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-miri"
+
+      - name: Run Miri
+        # Scoped to issuer-logic. Both issuer crates declare
+        # #![forbid(unsafe_code)], so there is no first-party UB surface. The
+        # root provii-issuer-worker tests exercise provii-crypto field
+        # arithmetic (BLS12-381, RedJubjub) that takes hours under Miri's
+        # interpreter and whose UB is already validated by provii-crypto's own
+        # Miri suite, so re-interpreting it here is infeasible in CI time and
+        # redundant. Miri on issuer-logic guards the host-testable pure logic
+        # against UB through dependency interactions. Proptest cases are skipped:
+        # under Miri each randomised case is 100-1000x slower and adds no UB
+        # signal the unit tests do not already cover.
+        run: cargo miri test -p issuer-logic --lib --locked -- --skip prop_
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-symbolic-alignment-check
+
+  # === Security Audit ===
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version '=0.22.0' --locked
+
+      - name: Run security audit
+        # Ignore list aligned with standalone security-audit.yml.
+        # RUSTSEC-2026-0105: timing side-channel in ed25519-dalek verify;
+        #   mitigated by constant-time comparison at the application layer.
+        # RUSTSEC-2024-0436: unmaintained instant crate, transitive via
+        #   worker-build; no direct usage, awaiting upstream migration.
+        # RUSTSEC-2024-0370: proc-macro-error unmaintained, pulled by
+        #   worker-macros; compile-time only, no runtime exposure.
+        # RUSTSEC-2026-0097: potential panic in serde_json recursion depth;
+        #   mitigated by Cloudflare Workers 128 KB body limit.
+        # Expiry: 2026-09-01 (all four).
+        run: |
+          cargo audit \
+            --deny unsound \
+            --deny unmaintained \
+            --ignore RUSTSEC-2026-0105 \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2024-0370 \
+            --ignore RUSTSEC-2026-0097 \
+            --ignore RUSTSEC-2026-0173
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version '=0.19.0' --locked
+
+      - name: Run cargo-deny
+        run: cargo deny check
+
+  # === Build WASM for Workers, per-environment ===
+  #
+  # Wrangler v4 ignores `[env.sandbox.build]` overrides, so the per-env build command must
+  # live in CI. Two separate jobs (not a matrix) keeps job outputs unambiguous for the
+  # downstream SLSA provenance job.
+  wasm-sandbox:
+    name: Build WASM (sandbox)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, test, security]
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_environment != 'none')
+    outputs:
+      wasm_hash: ${{ steps.hash.outputs.wasm_hash }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-wasm-sandbox"
+
+      - name: Install worker-build
+        run: cargo install worker-build --version "=0.7.4" --locked
+
+      - name: Build WASM (sandbox)
+        env:
+          PROVII_ENV: sandbox
+        run: worker-build --release
+
+      - name: Generate hashes (sandbox)
+        id: hash
+        run: |
+          cd build/worker
+          sha256sum * > SHA256SUMS
+          WASM_HASH=$(cat SHA256SUMS)
+          echo "wasm_hash<<EOF" >> $GITHUB_OUTPUT
+          echo "$WASM_HASH" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Upload WASM artifact (sandbox)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worker-wasm-sandbox
+          path: build/worker/
+
+  wasm-production:
+    name: Build WASM (production)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [lint, test, security]
+    if: |
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_environment != 'none')
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+      wasm_hash: ${{ steps.hash.outputs.wasm_hash }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-wasm-production"
+
+      - name: Install worker-build
+        run: cargo install worker-build --version "=0.7.4" --locked
+
+      - name: Build WASM (production)
+        env:
+          PROVII_ENV: production
+        run: worker-build --release
+
+      - name: Generate hashes
+        id: hash
+        run: |
+          cd build/worker
+          HASHES=$(sha256sum * | base64 -w0)
+          echo "hashes=$HASHES" >> $GITHUB_OUTPUT
+          sha256sum * > SHA256SUMS
+          WASM_HASH=$(cat SHA256SUMS)
+          echo "wasm_hash<<EOF" >> $GITHUB_OUTPUT
+          echo "$WASM_HASH" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Upload WASM artifact (production)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worker-wasm-production
+          path: build/worker/
+
+  # === Deploy to Sandbox ===
+  deploy-sandbox:
+    name: Deploy to Sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [wasm-sandbox]
+    if: github.ref == 'refs/heads/main' || github.event.inputs.deploy_environment == 'sandbox'
+    environment: sandbox
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Sandbox WASM (built in wasm-sandbox with PROVII_ENV=sandbox).
+      - name: Download WASM artifact (sandbox build)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: worker-wasm-sandbox
+          path: build/worker/
+
+      - name: Verify WASM artifact integrity
+        env:
+          EXPECTED_HASHES: ${{ needs.wasm-sandbox.outputs.wasm_hash }}
+        run: |
+          cd build/worker/
+          echo "$EXPECTED_HASHES" | sha256sum -c
+
+      - name: Clone provii-crypto (path dependency for worker-build)
+        run: git clone --depth 1 --branch v0.1.0 https://github.com/provii/provii-crypto.git ../provii-crypto
+      - name: Clone provii-audit (path dependency for worker-build)
+        run: git clone --depth 1 --branch v0.1.0 https://github.com/provii/provii-audit.git ../provii-audit
+      - name: Deploy to Cloudflare Workers (Sandbox)
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env sandbox
+          # The action's default bundled wrangler silently drops every
+          # `secrets_store_secrets` block during upload, leaving the
+          # deployed worker without SANDBOX_API_KEY (and the rest), so
+          # `register-test-issuer` 401s with `docs_hmac_invalid (server-
+          # side key not provisioned)`. Wrangler 4.85+ keeps them; pin so
+          # GH-deployed workers match what `wrangler deploy` produces
+          # locally.
+          wranglerVersion: "4.85.0"
+
+      - name: Post-deploy health check (Sandbox)
+        run: |
+          # AUD-IA-19a-015: Verify the deployed worker is responding
+          sleep 5
+          curl -sf https://sandbox-issuer.provii.app/health || exit 1
+
+  # === Deploy to Production ===
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [wasm-production]
+    # Prod is dispatch-only (deliberate): a tag push must not auto-deploy prod,
+    # and the lightweight v0.1.0 tag would otherwise fail the signed-tag gate.
+    if: github.event.inputs.deploy_environment == 'production'
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Verify deployment ref
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ ! "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "::error::Production deployment via workflow_dispatch requires a tag ref"
+            exit 1
+          fi
+        env:
+          GITHUB_REF: ${{ github.ref }}
+
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify tag signature
+        # AUD-IA-19b-005: Ensure the release tag is signed before deploying.
+        # Trust is pinned to the committed .github/allowed_signers (SSH signing).
+        env:
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          git config gpg.format ssh
+          git config gpg.ssh.allowedSignersFile .github/allowed_signers
+          git verify-tag "${TAG_REF}" 2>&1 || {
+            echo "::error::Tag ${TAG_REF} does not have a valid GPG/SSH signature"
+            exit 1
+          }
+
+      # Production WASM (built in wasm-production with PROVII_ENV=production).
+      - name: Download WASM artifact (production build)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: worker-wasm-production
+          path: build/worker/
+
+      - name: Verify WASM artifact integrity
+        env:
+          EXPECTED_HASHES: ${{ needs.wasm-production.outputs.wasm_hash }}
+        run: |
+          cd build/worker/
+          echo "$EXPECTED_HASHES" | sha256sum -c
+
+      - name: Clone provii-crypto (path dependency for worker-build)
+        run: git clone --depth 1 --branch v0.1.0 https://github.com/provii/provii-crypto.git ../provii-crypto
+      - name: Clone provii-audit (path dependency for worker-build)
+        run: git clone --depth 1 --branch v0.1.0 https://github.com/provii/provii-audit.git ../provii-audit
+      - name: Deploy to Cloudflare Workers (Production)
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # See sandbox deploy comment: pin wrangler so secrets_store_secrets
+          # bindings actually make it into the deployed worker.
+          wranglerVersion: "4.85.0"
+
+      - name: Post-deploy health check (Production)
+        run: |
+          # AUD-IA-19a-015: Verify the deployed worker is responding
+          sleep 5
+          curl -sf https://issuer.provii.app/health || exit 1
+
+  # === Release ===
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [deploy-production]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Release assets are the production build only.
+      - name: Download WASM artifact (production build)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: worker-wasm-production
+          path: dist/
+
+      - name: Generate checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign artifacts
+        run: |
+          cd dist
+          for file in *; do
+            if [[ "$file" != "SHA256SUMS" && "$file" != *.cosign-bundle ]]; then
+              cosign sign-blob --yes --bundle "${file}.cosign-bundle" "$file"
+            fi
+          done
+
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: 'dist/*'
+
+      - name: Create Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*
+
+  # === SLSA Provenance ===
+  # Provenance covers the production build only; the sandbox build is not a release artifact.
+  provenance:
+    name: SLSA Provenance
+    needs: [wasm-production, release]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0 # v2.1.0
+    with:
+      base64-subjects: "${{ needs.wasm-production.outputs.hashes }}"
+      upload-assets: true
+      private-repository: false
+      provenance-name: "provii-issuer.intoto.jsonl"
+
+  ci-success:
+    name: CI Success
+    needs: [lint, test, test-coverage, security, wasm-sandbox, wasm-production]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    steps:
+      - name: Harden Runner
+        # TODO: Upgrade all jobs to egress-policy: block once allowlists are validated
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Check required jobs
+        env:
+          HAS_FAILURE: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          if [[ "$HAS_FAILURE" == "true" ]]; then
+            echo "::error::One or more required jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All required jobs passed"

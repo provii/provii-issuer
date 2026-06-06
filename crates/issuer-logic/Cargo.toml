@@ -1,0 +1,44 @@
+[package]
+name = "issuer-logic"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "AGPL-3.0-only"
+authors = ["tom@maelstrom.au"]
+description = "Pure business logic for provii-issuer, host-testable without the Worker runtime."
+
+[dependencies]
+# Cryptography
+aes-gcm = "0.10"
+getrandom = "0.2"
+sha2 = "0.10"
+
+# Encoding
+hex = "0.4"
+serde_json = "1"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+zeroize = { version = "1.7", features = ["derive"] }
+
+[lints.clippy]
+# Mirror the root crate's strict linting
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+too_many_arguments = "allow"

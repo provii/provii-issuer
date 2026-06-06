@@ -1,0 +1,23 @@
+# Accepted advisories, documented in deny.toml with risk assessments
+
+# Expires: 2026-08-25 - core2: unmaintained/yanked, no_std shim, no security issue
+RUSTSEC-2026-0105
+# Expires: 2026-08-25 - paste: unmaintained proc-macro, compile-time only
+RUSTSEC-2024-0436
+# Expires: 2026-08-25 - proc-macro-error: unmaintained, compile-time only
+RUSTSEC-2024-0370
+# Expires: 2026-08-25 - rand: unsound with custom logger + rand::rng(), neither used in this codebase
+RUSTSEC-2026-0097
+
+# ADV-IA-43-003: OpenSSL CVE suppressions.
+# Only valid for wasm32 target. If non-wasm builds added, remove these suppressions.
+# The Workers runtime uses Web Crypto, not OpenSSL. The openssl crate is a
+# transitive dependency pulled in for non-wasm build targets only and is never
+# compiled into the production WASM bundle.
+# Expires: 2026-08-25 - openssl crate CVEs not applicable to wasm32 target
+CVE-2026-42327
+CVE-2026-44662
+CVE-2026-41676
+CVE-2026-41678
+CVE-2026-41898
+CVE-2026-41681
