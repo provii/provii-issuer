@@ -1,0 +1,11 @@
+# tools/generate-issuer-keys/Cargo.toml
+[package]
+name = "generate-issuer-keys"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[dependencies]
+provii-crypto-sig-redjubjub = { path = "../../../provii-crypto/crypto-sig-redjubjub" }
+base64 = "0.22"
+zeroize = { version = "1.7", features = ["derive"] }

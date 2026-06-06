@@ -1,0 +1,21 @@
+# Base64url alphabet
+"A"
+"B"
+"Z"
+"a"
+"z"
+"0"
+"9"
+"-"
+"_"
+
+# Invalid base64 characters (for negative testing)
+"+"
+"/"
+"="
+"=="
+
+# Common base64url patterns (32 bytes encoded = 43 chars)
+"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+"____________________________________-______"
+"MLXyqq0yVjC83dvOTWdlbQX9HMLQNbtTdbbpbZ4BoVc"

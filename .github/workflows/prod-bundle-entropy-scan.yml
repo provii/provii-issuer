@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2024-2026 Maelstrom AI Pty Ltd ATF Maelstrom AI Holding Trust
+#
+# Generic supply-chain control: high-entropy base64url scan on the
+# production WASM bundle. Flags 43- or 44-character `[A-Za-z0-9_-]`
+# tokens surviving in the compiled artefact. A correct build has none.
+# Ed25519 32-byte seeds encode to 43 chars URL-safe (no padding); a
+# 256-bit HMAC or symmetric key encodes to the same width. Any hit is
+# a candidate accidentally-committed secret.
+#
+# This workflow replaces the literal-prefix grep (`docs-sbx-`,
+# `mwallet-sbx-`, `register-test-issuer-client`) that was retired with
+# the docs-mediated per-session credential mint surface. Those literals
+# no longer exist in any code path so the legacy check was
+# broken-by-design. The high-entropy scan is independent of any
+# specific feature flag and is preserved here as a generic control.
+#
+# SHA-pinned actions per the org CI/CD standard
+# (`Architecture/cicd.std.md`).
+
+name: Prod WASM bundle entropy scan
+
+on:
+  workflow_run:
+    workflows: ['CI/CD Pipeline']
+    types: [completed]
+    branches: [main, develop]
+  schedule:
+    # Mondays at 02:30 UTC. Mirrors the cadence of the retired
+    # `weekly-bundle-grep.yml` so a regression cannot hide behind a
+    # PR-time-only check.
+    - cron: '30 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  entropy-scan:
+    name: High-entropy base64url scan on production wasm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Skip on PR-triggered upstream runs (artefact is not retained for
+    # forked-PR runs and the scan would be a no-op). Schedule and
+    # workflow_dispatch always run.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request')
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Download the production artefact from the upstream CI run
+      # (workflow_run path) or from the latest successful CI/CD Pipeline
+      # run (schedule / workflow_dispatch path).
+      - name: Download production WASM artefact (workflow_run)
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: worker-wasm-production
+          path: artefact/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve latest CI/CD Pipeline run id (schedule / dispatch)
+        if: github.event_name != 'workflow_run'
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID=$(gh run list \
+            --workflow 'CI/CD Pipeline' \
+            --branch main \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::no successful CI/CD Pipeline run on main"
+            exit 2
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download production WASM artefact (schedule / dispatch)
+        if: github.event_name != 'workflow_run'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: worker-wasm-production
+          path: artefact/
+          run-id: ${{ steps.latest.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install wabt (for wasm-strings)
+        run: |
+          # wabt's wasm-strings is a supplementary data-section extractor.
+          # It is not always available on the runner image, so install it
+          # best-effort: the scan's guaranteed extractor is `strings -a`
+          # (coreutils), which already covers a superset of the same content.
+          sudo apt-get update || true
+          sudo apt-get install -y --no-install-recommends wabt || true
+          wasm-strings --version || echo "wasm-strings unavailable; scan falls back to strings -a"
+
+      - name: Locate wasm binary
+        id: locate
+        run: |
+          set -euo pipefail
+          WASM=$(find artefact -name '*.wasm' -type f 2>/dev/null | head -n1)
+          if [ -z "$WASM" ]; then
+            echo "::notice::No production WASM artefact for this run; the triggering CI/CD Pipeline built no bundle to scan (for example a workflow-only change). The WASM build jobs in the pipeline guard the build itself, so there is nothing to scan here."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "wasm=$WASM" >> "$GITHUB_OUTPUT"
+          echo "Production wasm: $WASM ($(stat -c%s "$WASM") bytes)"
+
+      - name: Extract data-section strings
+        if: steps.locate.outputs.skip != 'true'
+        env:
+          WASM: ${{ steps.locate.outputs.wasm }}
+        run: |
+          # `wasm-strings` emits string literals from wasm data sections,
+          # one per line. `strings -a` is a fallback for non-ASCII data
+          # segments. Concatenate, deduplicate, scan.
+          wasm-strings "$WASM" > /tmp/wasm-strings.txt || true
+          strings -a -n 4 "$WASM" > /tmp/strings-raw.txt
+          cat /tmp/wasm-strings.txt /tmp/strings-raw.txt | sort -u > /tmp/strings-all.txt
+          echo "Extracted $(wc -l < /tmp/strings-all.txt) unique strings"
+
+      - name: High-entropy base64url scan
+        if: steps.locate.outputs.skip != 'true'
+        run: |
+          # Flag any 43- or 44-character base64url tokens surviving in
+          # the compiled bundle. A correct build has none: the only
+          # legitimate 256-bit secrets live in Secrets Store and are
+          # injected at runtime, never compiled in. False positives are
+          # conceivable on long identifiers, so an explicit corpus-level
+          # exemption set is supported. Each entry must be added with a
+          # code comment after security-team sign-off. Keep empty by
+          # default.
+          python3 - <<'PY'
+          import re
+          import sys
+
+          EXEMPT = set()
+
+          TOKEN = re.compile(r'^[A-Za-z0-9_-]{43,44}$')
+
+          hits = []
+          with open('/tmp/strings-all.txt', 'r', errors='replace') as f:
+              for line in f:
+                  line = line.strip()
+                  if TOKEN.fullmatch(line) and line not in EXEMPT:
+                      hits.append(line)
+
+          if hits:
+              print(f'FAIL: {len(hits)} candidate Ed25519/256-bit-key tokens in prod wasm:')
+              for h in hits[:50]:
+                  print(f'  {h}')
+              if len(hits) > 50:
+                  print(f'  ... and {len(hits) - 50} more')
+              sys.exit(1)
+          print('OK: no 43/44-char base64url tokens in production wasm data sections')
+          PY

@@ -1,0 +1,48 @@
+# Zizmor configuration for provii-issuer
+#
+# Documents legitimate dangerous-trigger and cache-poisoning sites that
+# the audit flags as high-severity but are required for the workflow to
+# function. Each entry must be paired with a written reason; do not add
+# entries to silence findings without analysis.
+
+rules:
+  dangerous-triggers:
+    ignore:
+      # CLA Assistant must use pull_request_target to comment on PRs from
+      # forks (the default GITHUB_TOKEN on pull_request lacks write
+      # permissions on forked-PR contexts). The workflow gates every step
+      # on `github.event_name == 'pull_request_target'` and runs only on
+      # trusted, named events; no untrusted code from the PR head is
+      # checked out or executed.
+      - cla.yml
+      # Production-bundle entropy scan downloads the build artefact from
+      # a successful upstream CI/CD run via workflow_run, then performs a
+      # read-only string scan. It does not check out or execute PR head
+      # code. workflow_run is required because the upstream artefact is
+      # only retained on the run that produced it.
+      - prod-bundle-entropy-scan.yml
+
+  cache-poisoning:
+    ignore:
+      # Rust toolchain caches keyed by the workspace Cargo.lock. Tag-push
+      # builds (release flow) read the cache populated by main-branch
+      # builds; a poisoned cache could only originate from a main-branch
+      # commit, which already requires CODEOWNERS review. Saving the
+      # cache from a tag-push run cannot escalate trust because the
+      # cache key is content-addressed by Cargo.lock.
+      - ci.yml
+      - sbom.yml
+
+  unpinned-uses:
+    ignore:
+      # SLSA's reusable workflow generator MUST be referenced by tag
+      # (not SHA) per the SLSA spec. The generator validates its own
+      # ref at runtime and refuses to run from a SHA pin, so pinning
+      # would break provenance generation entirely.
+      - ci.yml
+
+  archived-uses:
+    # contributor-assistant/github-action is archived but still
+    # functional and SHA-pinned. No maintained alternative exists.
+    ignore:
+      - cla.yml

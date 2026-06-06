@@ -1,0 +1,431 @@
+#######################################################################
+# Production (Default) - Live traffic                                 #
+#######################################################################
+name = "production-issuer"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-02-17"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+# ───────────────────────── Account & routing ─────────────────────────
+# Configure via: wrangler config set account_id <YOUR_ACCOUNT_ID>
+# Or: CLOUDFLARE_ACCOUNT_ID=<YOUR_ACCOUNT_ID> wrangler deploy
+
+routes = [{ pattern = "issuer.provii.app", custom_domain = true }]
+
+# ───────────────────────── KV Namespaces ─────────────────────────────
+# Production KV namespaces (PRODUCTION_ISSUER_*)
+kv_namespaces = [
+  { binding = "ISSUER_SESSIONS", id = "6acfa5c4e8494b4ca6a571d1ef88a67f" },
+  { binding = "ISSUER_OFFICER_REGISTRY", id = "3970d3a704a54c31aedc8ed7fd38132a" },
+  { binding = "ISSUER_KEYS", id = "96538b36ffa9470caac078116528c4c3" },
+  { binding = "ISSUER_CONFIG", id = "66fa4e8ba0ec4660a165bebf5af68c37" },
+  { binding = "ISSUER_CLIENTS", id = "1bef7133739641a7af7f40c28059581a" },
+  { binding = "ISSUER_CHALLENGES", id = "f0509812211a43f3a547c7f2ffc8cb2c" },
+  { binding = "ISSUER_NONCES", id = "2fb131c91d5341e88fd079f6911f6b3f" },
+  { binding = "ISSUER_METRICS", id = "bb608e3888144f7fa1de61831b0e6662" },
+  { binding = "ISSUER_QUOTAS", id = "b09c4a92e36c4c1cbbbb04d93736477a" },
+  { binding = "RATE_LIMIT_CONFIG", id = "bdcb719fd5924df6a9c92a29334baa75" },
+  # ST-IA-014: ISSUER_RATE_LIMITS shares the underlying KV namespace with
+  # RATE_LIMIT_CONFIG above. Isolation is via key prefixes: rate_limits/*
+  # (config/tiers) vs quota:*, blind:*, blind_ip:*, lockout:* (counters).
+  # Separate namespaces would provide stronger isolation but the prefix
+  # scheme is sufficient at current scale.
+  { binding = "ISSUER_RATE_LIMITS", id = "bdcb719fd5924df6a9c92a29334baa75" },
+  # Blind attestation (Ed25519 issuers)
+  { binding = "ISSUER_ED25519_KEYS", id = "dd9e56c549d94efdafc2f7428c954b0c" },
+  { binding = "ISSUER_ED25519_SIGNING_KEYS", id = "05e688810f3b45489b42fde2be885d32" },
+  { binding = "ISSUER_ATTESTATION_NONCES", id = "766bf08c6dc0404f82f51e5dbb44e124" },
+  # Replay protection cache (ASVS requirement)
+  { binding = "ISSUER_REPLAY_CACHE", id = "946016b71e7540d5a912b99bd9daa2c9" },
+]
+
+# ───────────────────────── Durable Objects ───────────────────────────
+# Durable Objects for atomic resource locking (OWASP ASVS Phase 2)
+# Prevents race conditions in one-time token consumption
+[[durable_objects.bindings]]
+name = "RESOURCE_LOCK"
+class_name = "ResourceLockDO"
+script_name = "production-issuer"
+
+# Atomic nonce replay prevention DO (replaces KV check-then-set)
+[[durable_objects.bindings]]
+name = "ISSUER_NONCE_DO"
+class_name = "NonceDO"
+script_name = "production-issuer"
+
+# Migrations for Durable Objects deployment
+[[migrations]]
+tag = "v1"
+new_classes = ["ResourceLockDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["AuditLogDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["NonceDO"]
+
+[[migrations]]
+tag = "v4"
+deleted_classes = ["AuditLogDO"]
+
+# ───────────────────────── Queue Producers ──────────────────────────────
+[[queues.producers]]
+queue = "provii-audit-events"
+binding = "AUDIT_QUEUE"
+
+# ───────────────────────── Environment Variables ─────────────────────
+[vars]
+# Production identification
+ISSUER_ID = "provii:issuer:production"
+WORKER_BASE_URL = "https://issuer.provii.app"
+ENVIRONMENT = "production"
+DEFAULT_KID = "provii:2026-05"
+# AUD-IA-23a-003: Must stay in sync with Cargo.toml [package] version
+API_VERSION = "2.0.0"
+API_BASE_URL = "https://issuer.provii.app"
+
+# CH-070: Explicit CORS origin allowlist (removes reliance on hardcoded fallback).
+# ADV-IA-045: Intentionally identical to sandbox. Both environments serve the same
+# origins; there is no sandbox-specific domain.
+ALLOWED_ORIGINS = "https://demo.provii.app,https://app.provii.app"
+
+LOG_LEVEL = "info"
+ENABLE_TRACING = "true"
+
+# Production rate limits
+# R14: per-IP hourly limit for unauthenticated /v1/challenge (code default: 60,
+# read in src/routes.rs). PROD VALUE UNCHANGED from the code default; surfaced
+# here so it is config-visible and relaxable per-env (coordinated with the
+# GLOBAL_IP_* vars added by R10 above/below).
+CHALLENGE_IP_LIMIT_PER_HOUR = "60"
+# Per-IP hourly limit for unauthenticated blind issuance (code default: 60)
+BLIND_IP_LIMIT_PER_HOUR = "60"
+# Per-IP hourly limit for pre-auth /v1/attestation/create (code default: 60, SEC-013)
+ATTESTATION_IP_LIMIT_PER_HOUR = "60"
+# R14: the MAX_CHALLENGES_PER_OFFICER_PER_HOUR / MAX_SESSIONS_PER_CLIENT_PER_HOUR
+# / MAX_CREDENTIALS_PER_SESSION vars were removed here: they had ZERO src
+# references (the surfaces they implied do not exist - blind issuance mints
+# exactly one credential per call and is bounded by the per-IP 60/hr and the
+# per-issuer 1000/hr limits). They were misleading dead config, not deleted
+# enforcement.
+
+# Per-customer hourly quota (default when no tier assigned)
+DEFAULT_QUOTA_PER_HOUR = "500"
+# Per-issuer blind issuance hourly limit
+BLIND_ISSUANCE_LIMIT_PER_HOUR = "1000"
+
+# R10: global pre-routing per-IP caps (evaluated on EVERY request before
+# routing, keyed global_post/global_get). Code defaults: 120 mutating / 600 GET
+# (unwrap_or + filter(>=1) in src/lib.rs). PROD VALUES UNCHANGED from the prior
+# hardcoded literals; surfaced here only so they are config-visible.
+GLOBAL_IP_MUTATING_LIMIT_PER_HOUR = "120"
+GLOBAL_IP_GET_LIMIT_PER_HOUR = "600"
+
+# Production TTLs
+CHALLENGE_TTL_SEC = "120"
+SESSION_TTL_SEC = "300"
+PICKUP_TTL_SEC = "300"
+MAX_CREDENTIAL_VALIDITY_DAYS = "3650"
+
+# Reference to production verifier
+EXAMPLE_VERIFIER_URL = "https://verify.provii.app/v1"
+
+
+# ───────────────────────── Build ─────────────────────────────────────
+[build]
+command = "PATH=$HOME/.cargo/bin:$PATH cargo install -q worker-build@0.7.4 && PATH=$HOME/.cargo/bin:$PATH worker-build --release"
+
+# ───────────────────────── Cron Triggers ────────────────────────────
+[triggers]
+crons = ["* * * * *"] # Every minute: warmup keep-alive
+
+# ───────────────────────── Analytics Engine ──────────────────────────
+[[analytics_engine_datasets]]
+binding = "ISSUER_ANALYTICS"
+dataset = "ISSUER_ANALYTICS"
+
+# ───────────────────────── Observability ─────────────────────────────
+[observability.traces]
+enabled = true
+destinations = ["grafana-traces"]
+
+[observability.logs]
+enabled = true
+destinations = ["grafana-logs"]
+
+# ───────────────────────── Placement ─────────────────────────────────
+[placement]
+mode = "smart"
+
+# ───────────────────────── Secrets Store ─────────────────────────────
+[[secrets_store_secrets]]
+binding = "ISSUER_KEK"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_KEK_PROD"
+
+# IP hash salt for privacy-preserving audit logs (GDPR Article 5(1)(c))
+[[secrets_store_secrets]]
+binding = "ISSUER_IP_HASH_SALT"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_IP_HASH_SALT_PROD"
+
+# ── Key rotation _PREVIOUS bindings (optional, only present during rotation) ──
+[[secrets_store_secrets]]
+binding = "ISSUER_KEK_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_KEK_PROD_PREVIOUS"
+
+[[secrets_store_secrets]]
+binding = "ADMIN_API_KEY"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_ADMIN_API_KEY_PROD"
+
+[[secrets_store_secrets]]
+binding = "ADMIN_API_KEY_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_ADMIN_API_KEY_PROD_PREVIOUS"
+
+# Status monitoring authentication
+[[secrets_store_secrets]]
+binding = "STATUS_API_TOKEN"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_STATUS_TOKEN_PROD"
+
+# Dual-slot binding for STATUS_API_TOKEN rotation overlap
+# windows. Health/metrics endpoints accept either slot; operators MUST
+# remove STATUS_API_TOKEN_PREVIOUS from the Secrets Store within 24h
+# of completing rotation per RUNBOOKS.md §HMAC step 5 (callee-first).
+# Coordinated with provii-verifier side; both Workers carry this binding.
+[[secrets_store_secrets]]
+binding = "STATUS_API_TOKEN_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_STATUS_TOKEN_PROD_PREVIOUS"
+
+# AUD-IA-23a-001: Internal version service token used by /internal/version
+# and /internal/admin/* endpoints (src/internal_version.rs, src/internal_admin.rs).
+# Dual-slot for zero-downtime rotation.
+[[secrets_store_secrets]]
+binding = "INTERNAL_VERSION_SERVICE_TOKEN"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_INTERNAL_AUTH_PROD"
+
+[[secrets_store_secrets]]
+binding = "INTERNAL_VERSION_SERVICE_TOKEN_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_INTERNAL_AUTH_PROD_PREVIOUS"
+
+#######################################################################
+# Sandbox Environment (--env sandbox)                                 #
+#######################################################################
+[env.sandbox]
+name = "sandbox-issuer"
+workers_dev = false
+
+routes = [{ pattern = "sandbox-issuer.provii.app", custom_domain = true }]
+
+# ── Sandbox KV Namespaces ────────────────────────────────────────────
+# Sandbox-specific KV namespaces (SANDBOX_ISSUER_*)
+kv_namespaces = [
+  { binding = "ISSUER_SESSIONS", id = "954bd8ede54948598e7f1affa8225c4b" },
+  { binding = "ISSUER_OFFICER_REGISTRY", id = "a7259eb639414ec89abba4046c6890dc" },
+  { binding = "ISSUER_KEYS", id = "f7cf7bd983ac4891adb406cdf66bf873" },
+  { binding = "ISSUER_CONFIG", id = "d0a4b91b20944a608ea924dbee14e371" },
+  { binding = "ISSUER_CLIENTS", id = "ad80c9804774499d92e814d4538f2d3f" },
+  { binding = "ISSUER_CHALLENGES", id = "27887740284f43d1b6a7a5b03a0227ca" },
+  { binding = "ISSUER_NONCES", id = "df8a84f20bc147bf832000b4abe2b97f" },
+  { binding = "ISSUER_METRICS", id = "2315aaf1a6704c6895782004c26a0da1" },
+  { binding = "ISSUER_QUOTAS", id = "e52165fdb972484a83ee7b1737262c7a" },
+  { binding = "RATE_LIMIT_CONFIG", id = "9692ea7a62ec4968a43023d59c3e9385" },       # SANDBOX (shared with provii-management, provii-verifier)
+  # Officer lockout counters (shares namespace with RATE_LIMIT_CONFIG, prefixed keys)
+  { binding = "ISSUER_RATE_LIMITS", id = "9692ea7a62ec4968a43023d59c3e9385" },
+  # Blind attestation (Ed25519 issuers)
+  { binding = "ISSUER_ED25519_KEYS", id = "445a93a28b884b9fb3a323cc46a7302d" },
+  { binding = "ISSUER_ED25519_SIGNING_KEYS", id = "e34155259bf24347b78c8653074d9476" },
+  { binding = "ISSUER_ATTESTATION_NONCES", id = "2b99d8ce446040f0b0253c3f61a52753" },
+  # Replay protection cache (ASVS requirement)
+  { binding = "ISSUER_REPLAY_CACHE", id = "718fdd1b4b224d9d8b6ffdd64bfad1bd" },
+]
+
+# ── Sandbox Durable Objects ──────────────────────────────────────────
+# Durable Objects for atomic resource locking (OWASP ASVS Phase 2)
+[[env.sandbox.durable_objects.bindings]]
+name = "RESOURCE_LOCK"
+class_name = "ResourceLockDO"
+script_name = "sandbox-issuer"
+
+# Atomic nonce replay prevention DO (replaces KV check-then-set)
+[[env.sandbox.durable_objects.bindings]]
+name = "ISSUER_NONCE_DO"
+class_name = "NonceDO"
+script_name = "sandbox-issuer"
+
+# Migrations for Durable Objects deployment
+[[env.sandbox.migrations]]
+tag = "v1"
+new_classes = ["ResourceLockDO"]
+
+[[env.sandbox.migrations]]
+tag = "v2"
+new_classes = ["AuditLogDO"]
+
+[[env.sandbox.migrations]]
+tag = "v3"
+new_classes = ["NonceDO"]
+
+[[env.sandbox.migrations]]
+tag = "v4"
+deleted_classes = ["AuditLogDO"]
+
+# ── Sandbox Queue Producers ────────────────────────────────────────────
+[[env.sandbox.queues.producers]]
+queue = "provii-audit-events-sandbox"
+binding = "AUDIT_QUEUE"
+
+# ── Sandbox Variables ────────────────────────────────────────────────
+[env.sandbox.vars]
+# Sandbox identification (fallback only - dynamic lookup preferred)
+ISSUER_ID = "provii:issuer:sandbox"
+WORKER_BASE_URL = "https://sandbox-issuer.provii.app"
+ENVIRONMENT = "sandbox"
+DEFAULT_KID = "provii:sandbox"
+API_BASE_URL = "https://sandbox-issuer.provii.app"
+
+# CH-070: Explicit CORS origin allowlist for sandbox.
+# Docs origins remain on the list so Swagger UI and direct fetch tooling
+# served from docs.provii.app can read the public spec from the
+# sandbox issuer. The docs-mediated credential mint surface was retired,
+# so docs pages no longer make any credential-bearing requests here.
+# The CORS middleware sets `Access-Control-Allow-Credentials: true` for
+# any allowed origin (provii-issuer/src/lib.rs), but no cookies are scoped
+# to *.provii.app for these docs origins so the credentials flag
+# is inert in practice for docs-origin requests.
+ALLOWED_ORIGINS = "https://demo.provii.app,https://app.provii.app,https://docs.provii.app,https://uat-docs.provii.app,https://preview.docs-sandbox.provii.app"
+
+# Sandbox-specific settings
+LOG_LEVEL = "debug"
+ENABLE_TRACING = "true"
+
+# Sandbox rate limits (higher than production for multi-developer testing)
+# R14: per-IP hourly limit for unauthenticated /v1/challenge, RELAXED for
+# multi-developer / load-test traffic (prod default is 60).
+CHALLENGE_IP_LIMIT_PER_HOUR = "120"
+# Per-IP hourly limit for unauthenticated blind issuance (higher for sandbox)
+BLIND_IP_LIMIT_PER_HOUR = "120"
+# Per-IP hourly limit for pre-auth /v1/attestation/create (higher for sandbox, SEC-013)
+ATTESTATION_IP_LIMIT_PER_HOUR = "120"
+# R14: removed the dead MAX_CHALLENGES_PER_OFFICER_PER_HOUR /
+# MAX_SESSIONS_PER_CLIENT_PER_HOUR / MAX_CREDENTIALS_PER_SESSION vars (zero src
+# references; see the production [vars] note above).
+
+# Per-customer hourly quota (default when no tier assigned, higher for sandbox)
+DEFAULT_QUOTA_PER_HOUR = "2000"
+# Per-issuer blind issuance hourly limit (higher for sandbox)
+BLIND_ISSUANCE_LIMIT_PER_HOUR = "5000"
+
+# R10: global pre-routing per-IP caps, RELAXED for multi-developer / load-test
+# traffic so sandbox runs do not slam into the prod-hostile 120 mutating wall.
+GLOBAL_IP_MUTATING_LIMIT_PER_HOUR = "2000"
+GLOBAL_IP_GET_LIMIT_PER_HOUR = "10000"
+
+# Sandbox TTLs
+CHALLENGE_TTL_SEC = "300"
+SESSION_TTL_SEC = "300"
+PICKUP_TTL_SEC = "300"
+MAX_CREDENTIAL_VALIDITY_DAYS = "30"
+
+# Reference to sandbox verifier
+EXAMPLE_VERIFIER_URL = "https://sandbox-verify.provii.app/v1"
+
+
+# ── Sandbox Analytics Engine ─────────────────────────────────────────
+[[env.sandbox.analytics_engine_datasets]]
+binding = "ISSUER_ANALYTICS"
+dataset = "ISSUER_ANALYTICS"
+
+# ── Sandbox Observability ────────────────────────────────────────────
+[env.sandbox.observability.traces]
+enabled = true
+destinations = ["grafana-traces"]
+
+[env.sandbox.observability.logs]
+enabled = true
+destinations = ["grafana-logs"]
+
+# ── Sandbox Cron Triggers ─────────────────────────────────────────
+# R15: the per-minute sandbox keep-alive cron was removed. Its scheduled
+# handler is a pure no-op health check (zero I/O), so the only effect of the
+# cron was to keep sandbox Durable Objects warm and bill DO compute requests
+# every minute. Removing it lets idle sandbox DOs hibernate. The PRODUCTION
+# cron ([triggers] above) is intentionally retained and UNCHANGED.
+
+# ── Sandbox Secrets Store ────────────────────────────────────────────
+# Sandbox uses separate secrets with SANDBOX_ prefix
+[[env.sandbox.secrets_store_secrets]]
+binding = "ISSUER_KEK"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_KEK_SANDBOX"
+
+# Sandbox IP hash salt for privacy-preserving audit logs
+[[env.sandbox.secrets_store_secrets]]
+binding = "ISSUER_IP_HASH_SALT"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_IP_HASH_SALT_SANDBOX"
+
+# ── Sandbox key rotation _PREVIOUS bindings (optional) ──
+[[env.sandbox.secrets_store_secrets]]
+binding = "ISSUER_KEK_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_KEK_SANDBOX_PREVIOUS"
+
+[[env.sandbox.secrets_store_secrets]]
+binding = "ADMIN_API_KEY"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_ADMIN_API_KEY_SANDBOX"
+
+[[env.sandbox.secrets_store_secrets]]
+binding = "ADMIN_API_KEY_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_ADMIN_API_KEY_SANDBOX_PREVIOUS"
+
+# Sandbox status monitoring authentication
+[[env.sandbox.secrets_store_secrets]]
+binding = "STATUS_API_TOKEN"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_STATUS_TOKEN_SANDBOX"
+
+# Dual-slot binding for sandbox STATUS_API_TOKEN rotation.
+[[env.sandbox.secrets_store_secrets]]
+binding = "STATUS_API_TOKEN_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_STATUS_TOKEN_SANDBOX_PREVIOUS"
+
+# AUD-IA-23a-001: Internal version service token for sandbox.
+# Dual-slot for zero-downtime rotation.
+[[env.sandbox.secrets_store_secrets]]
+binding = "INTERNAL_VERSION_SERVICE_TOKEN"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_INTERNAL_AUTH_SANDBOX"
+
+[[env.sandbox.secrets_store_secrets]]
+binding = "INTERNAL_VERSION_SERVICE_TOKEN_PREVIOUS"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_ISSUER_INTERNAL_AUTH_SANDBOX_PREVIOUS"
+
+# Wave A: SANDBOX_API_KEY shared with provii-verifier docs gateway.
+#
+# Used to verify the X-Docs-Hmac envelope on POST /v1/register-test-issuer.
+# Identical secret_name as provii-verifier so the docs gateway only has to
+# hold one key (see provii-verifier/wrangler.toml SB-001 binding). The
+# cross-service replay risk is bounded by non-overlapping body schemas
+# plus the in-body api_key field check.
+#
+# Bound on sandbox only. Production never serves /v1/register-test-issuer
+# (route is gated on cfg.environment == "sandbox") so the secret would be
+# unused there.
+[[env.sandbox.secrets_store_secrets]]
+binding = "SANDBOX_API_KEY"
+store_id = "6e32e830825542ef86170c1b634df9e6"
+secret_name = "PROVII_DEMO_VERIFIER_API_KEY_SANDBOX"

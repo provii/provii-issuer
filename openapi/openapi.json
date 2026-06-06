@@ -1,0 +1,1230 @@
+{
+    "components": {
+        "schemas": {
+            "BlindIssuanceResponse": {
+                "$defs": {
+                    "SignedCredentialHeader": {
+                        "description": "Public header returned after a commitment is signed.",
+                        "properties": {
+                            "c_bytes": {
+                                "contentEncoding": "base64url",
+                                "contentMediaType": "application/octet-stream",
+                                "description": "Commitment bytes included in the credential.",
+                                "maxLength": 43,
+                                "minLength": 43,
+                                "type": "string"
+                            },
+                            "exp": {
+                                "description": "Credential expiry timestamp.",
+                                "format": "uint64",
+                                "minimum": 0,
+                                "type": "integer"
+                            },
+                            "iat": {
+                                "description": "Credential issuance timestamp.",
+                                "format": "uint64",
+                                "minimum": 0,
+                                "type": "integer"
+                            },
+                            "issuer_vk": {
+                                "contentEncoding": "base64url",
+                                "contentMediaType": "application/octet-stream",
+                                "description": "Issuer verification key material.",
+                                "maxLength": 43,
+                                "minLength": 43,
+                                "type": "string"
+                            },
+                            "kid": {
+                                "description": "Key identifier used to produce the signature.",
+                                "type": "string"
+                            },
+                            "schema": {
+                                "description": "Schema identifier describing the credential contents.",
+                                "type": "string"
+                            },
+                            "sig_rj": {
+                                "contentEncoding": "base64url",
+                                "contentMediaType": "application/octet-stream",
+                                "description": "RedJubjub signature bytes.",
+                                "maxLength": 86,
+                                "minLength": 86,
+                                "type": "string"
+                            },
+                            "v": {
+                                "description": "Data structure version number.",
+                                "format": "uint8",
+                                "maximum": 255,
+                                "minimum": 0,
+                                "type": "integer"
+                            }
+                        },
+                        "required": [
+                            "v",
+                            "kid",
+                            "issuer_vk",
+                            "sig_rj",
+                            "c_bytes",
+                            "iat",
+                            "exp",
+                            "schema"
+                        ],
+                        "type": "object"
+                    }
+                },
+                "description": "Response payload for successful blind issuance.",
+                "properties": {
+                    "credential": {
+                        "$ref": "#/$defs/SignedCredentialHeader",
+                        "description": "The signed credential header containing the commitment and RedJubjub signature."
+                    }
+                },
+                "required": [
+                    "credential"
+                ],
+                "type": "object"
+            },
+            "ChallengeRequest": {
+                "additionalProperties": false,
+                "description": "Request body for provisioning a YubiKey challenge.\nIV-205: deny_unknown_fields prevents unexpected fields in external input.",
+                "properties": {
+                    "officer_id": {
+                        "description": "Officer identifier expecting to answer the challenge.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "officer_id"
+                ],
+                "type": "object"
+            },
+            "ChallengeResponse": {
+                "description": "Response payload containing the generated challenge material.",
+                "properties": {
+                    "challenge": {
+                        "description": "Hex-encoded challenge bytes delivered to the client device.",
+                        "type": "string"
+                    },
+                    "challenge_id": {
+                        "description": "Server-issued challenge identifier.",
+                        "type": "string"
+                    },
+                    "expires_at": {
+                        "description": "Absolute expiration timestamp for the challenge.",
+                        "format": "int64",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "challenge_id",
+                    "challenge",
+                    "expires_at"
+                ],
+                "type": "object"
+            },
+            "CreateAttestationRequest": {
+                "$defs": {
+                    "Authorizer": {
+                        "additionalProperties": false,
+                        "description": "Standardized authentication envelope shared by officers and clients.\nIV-205: deny_unknown_fields prevents unexpected fields in external input.",
+                        "properties": {
+                            "challengeId": {
+                                "description": "Challenge identifier required for YubiKey flows.",
+                                "type": [
+                                    "string",
+                                    "null"
+                                ]
+                            },
+                            "format": {
+                                "description": "Declares the authentication mechanism (`\"yubikey\"` or `\"client\"`).",
+                                "type": "string"
+                            },
+                            "hmac": {
+                                "description": "Hex-encoded HMAC over the canonical payload.",
+                                "type": "string"
+                            },
+                            "keyId": {
+                                "description": "Identifier of the key used to produce the HMAC.",
+                                "type": "string"
+                            },
+                            "nonce": {
+                                "description": "Cryptographic nonce for replay protection (64 hex chars / 256 bits, mandatory).",
+                                "type": "string"
+                            },
+                            "timestamp": {
+                                "description": "Unix timestamp in SECONDS included in the canonical message.\nWindow 30 seconds (compared against provii-verifier's 300-second\nwindow in its own HMAC verification). See `validate_timestamp`\nin `session.rs` and `TIMESTAMP_WINDOW_SECONDS = 30`.",
+                                "format": "uint64",
+                                "minimum": 0,
+                                "type": "integer"
+                            }
+                        },
+                        "required": [
+                            "format",
+                            "keyId",
+                            "timestamp",
+                            "hmac",
+                            "nonce"
+                        ],
+                        "type": "object"
+                    }
+                },
+                "additionalProperties": false,
+                "description": "Request payload for creating a DOB attestation.\n\n# Security (ASVS 5.0 / MASVS 2.0)\n- Officer authentication via HMAC (same as existing issuance flow)\n- Ed25519 signing key retrieved from secure storage\n- Attestation signed with issuer-specific key\n\nIV-205: deny_unknown_fields prevents unexpected fields in external input.",
+                "properties": {
+                    "authorizer": {
+                        "$ref": "#/$defs/Authorizer",
+                        "description": "Authentication material (HMAC auth for officer)."
+                    },
+                    "dob_days": {
+                        "description": "Days since Unix epoch representing date of birth.\nNegative values represent dates before 1970-01-01 (e.g. -25000 ~ 1901).",
+                        "format": "int32",
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "dob_days",
+                    "authorizer"
+                ],
+                "type": "object"
+            },
+            "CreateAttestationResponse": {
+                "description": "Response payload for successful attestation creation.",
+                "properties": {
+                    "attestation": {
+                        "description": "Base64url-encoded DobAttestation containing Ed25519 signature.",
+                        "type": "string"
+                    },
+                    "expires_at": {
+                        "description": "Unix timestamp when this attestation expires (1 hour from creation).",
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "issuer_id": {
+                        "description": "Issuer identifier that signed this attestation.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "attestation",
+                    "expires_at",
+                    "issuer_id"
+                ],
+                "type": "object"
+            },
+            "ErrorResponse": {
+                "properties": {
+                    "code": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "details": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "error": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "error"
+                ],
+                "type": "object"
+            },
+            "KeyHealthResponse": {
+                "properties": {
+                    "days_until_expiration": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
+                    "has_expired_active": {
+                        "type": "boolean"
+                    },
+                    "has_expiring_soon": {
+                        "type": "boolean"
+                    },
+                    "has_multiple_active": {
+                        "type": "boolean"
+                    },
+                    "has_no_active": {
+                        "type": "boolean"
+                    },
+                    "has_no_keys": {
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "KeyRotationResponse": {
+                "properties": {
+                    "key_id": {
+                        "description": "ID of the newly rotated key",
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            }
+        },
+        "securitySchemes": {
+            "AdminApiKey": {
+                "description": "Admin API key for key management operations",
+                "in": "header",
+                "name": "X-Admin-API-Key",
+                "type": "apiKey"
+            },
+            "ApiKeyAuth": {
+                "description": "API key issued to authorised issuing organisations",
+                "in": "header",
+                "name": "X-API-Key",
+                "type": "apiKey"
+            },
+            "HmacAuth": {
+                "description": "HMAC-SHA256 request signature for service-to-service calls",
+                "in": "header",
+                "name": "X-HMAC",
+                "type": "apiKey"
+            },
+            "StatusTokenAuth": {
+                "description": "Dedicated token for health/metrics endpoint access (STATUS_API_TOKEN)",
+                "in": "header",
+                "name": "X-Status-Token",
+                "type": "apiKey"
+            },
+            "YubiKeyHMAC": {
+                "bearerFormat": "HMAC-SHA256",
+                "description": "YubiKey HMAC-SHA256 challenge-response authentication for officers",
+                "scheme": "bearer",
+                "type": "http"
+            }
+        }
+    },
+    "info": {
+        "contact": {
+            "email": "support@provii.app",
+            "name": "Provii Support",
+            "url": "https://provii.app"
+        },
+        "description": "Privacy-preserving credential issuance service using blind attestation. Officers create attestations that users scan to receive credentials without revealing commitment data.",
+        "title": "Provii Issuer Service API",
+        "version": "1.0.0"
+    },
+    "openapi": "3.1.0",
+    "paths": {
+        "/.well-known/jwks.json": {
+            "get": {
+                "description": "Returns the issuer's public signing keys in JWKS format at the standard well-known URI",
+                "operationId": "getJwksWellKnown",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "keys": {
+                                            "items": {
+                                                "type": "object"
+                                            },
+                                            "type": "array"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "JWKS returned successfully"
+                    }
+                },
+                "security": [],
+                "summary": "Get JWKS (well-known)",
+                "tags": [
+                    "JWKS"
+                ]
+            }
+        },
+        "/health": {
+            "get": {
+                "operationId": "health",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "checks": {
+                                            "description": "Subsystem health checks",
+                                            "type": "object"
+                                        },
+                                        "status": {
+                                            "enum": [
+                                                "healthy",
+                                                "degraded",
+                                                "unhealthy"
+                                            ],
+                                            "example": "healthy",
+                                            "type": "string"
+                                        },
+                                        "timestamp": {
+                                            "format": "int64",
+                                            "type": "integer"
+                                        },
+                                        "version": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "status",
+                                        "timestamp",
+                                        "version"
+                                    ],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Service is healthy"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "checks": {
+                                            "description": "Subsystem health checks",
+                                            "type": "object"
+                                        },
+                                        "status": {
+                                            "enum": [
+                                                "healthy",
+                                                "degraded",
+                                                "unhealthy"
+                                            ],
+                                            "example": "unhealthy",
+                                            "type": "string"
+                                        },
+                                        "timestamp": {
+                                            "format": "int64",
+                                            "type": "integer"
+                                        },
+                                        "version": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "status",
+                                        "timestamp",
+                                        "version"
+                                    ],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Service unhealthy"
+                    }
+                },
+                "security": [],
+                "summary": "Health check",
+                "tags": [
+                    "Operations"
+                ]
+            }
+        },
+        "/health/detailed": {
+            "get": {
+                "description": "Returns detailed subsystem health checks including KV storage probes, configuration availability, and Durable Object connectivity. Requires authentication via X-Status-Token header.",
+                "operationId": "healthDetailed",
+                "parameters": [
+                    {
+                        "description": "Status API token for authenticated health checks",
+                        "in": "header",
+                        "name": "X-Status-Token",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "checks": {
+                                            "description": "Subsystem health checks with KV, config, and DO probe results",
+                                            "type": "object"
+                                        },
+                                        "status": {
+                                            "enum": [
+                                                "healthy",
+                                                "degraded",
+                                                "unhealthy"
+                                            ],
+                                            "example": "healthy",
+                                            "type": "string"
+                                        },
+                                        "timestamp": {
+                                            "format": "int64",
+                                            "type": "integer"
+                                        },
+                                        "version": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "status",
+                                        "timestamp",
+                                        "version",
+                                        "checks"
+                                    ],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Detailed health status with subsystem checks"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized - missing or invalid X-Status-Token"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "checks": {
+                                            "type": "object"
+                                        },
+                                        "status": {
+                                            "enum": [
+                                                "healthy",
+                                                "degraded",
+                                                "unhealthy"
+                                            ],
+                                            "example": "unhealthy",
+                                            "type": "string"
+                                        },
+                                        "timestamp": {
+                                            "format": "int64",
+                                            "type": "integer"
+                                        },
+                                        "version": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "status",
+                                        "timestamp",
+                                        "version",
+                                        "checks"
+                                    ],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Service unhealthy"
+                    }
+                },
+                "security": [
+                    {
+                        "StatusTokenAuth": []
+                    }
+                ],
+                "summary": "Detailed health check",
+                "tags": [
+                    "Operations"
+                ]
+            }
+        },
+        "/metrics": {
+            "get": {
+                "description": "Returns service metrics as JSON (same payload as /health/detailed). Requires authentication via X-Status-Token header.",
+                "operationId": "metrics",
+                "parameters": [
+                    {
+                        "description": "Status API token for metrics access",
+                        "in": "header",
+                        "name": "X-Status-Token",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "checks": {
+                                            "type": "object"
+                                        },
+                                        "status": {
+                                            "enum": [
+                                                "healthy",
+                                                "degraded",
+                                                "unhealthy"
+                                            ],
+                                            "type": "string"
+                                        },
+                                        "timestamp": {
+                                            "format": "int64",
+                                            "type": "integer"
+                                        },
+                                        "version": {
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "status",
+                                        "timestamp",
+                                        "version",
+                                        "checks"
+                                    ],
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Service metrics"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized - missing or invalid X-Status-Token"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    }
+                },
+                "security": [
+                    {
+                        "StatusTokenAuth": []
+                    }
+                ],
+                "summary": "Service metrics",
+                "tags": [
+                    "Operations"
+                ]
+            }
+        },
+        "/v1/attestation/create": {
+            "post": {
+                "description": "Creates a signed attestation containing dob_days that officers display as a QR code. Users scan this QR code and call /v1/issuance/blind to receive their credential.",
+                "operationId": "createAttestation",
+                "parameters": [
+                    {
+                        "description": "API key issued to the issuing organization",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$defs": {
+                                    "Authorizer": {
+                                        "additionalProperties": false,
+                                        "description": "Standardized authentication envelope shared by officers and clients.\nIV-205: deny_unknown_fields prevents unexpected fields in external input.",
+                                        "properties": {
+                                            "challengeId": {
+                                                "description": "Challenge identifier required for YubiKey flows.",
+                                                "type": [
+                                                    "string",
+                                                    "null"
+                                                ]
+                                            },
+                                            "format": {
+                                                "description": "Declares the authentication mechanism (`\"yubikey\"` or `\"client\"`).",
+                                                "type": "string"
+                                            },
+                                            "hmac": {
+                                                "description": "Hex-encoded HMAC over the canonical payload.",
+                                                "type": "string"
+                                            },
+                                            "keyId": {
+                                                "description": "Identifier of the key used to produce the HMAC.",
+                                                "type": "string"
+                                            },
+                                            "nonce": {
+                                                "description": "Cryptographic nonce for replay protection (64 hex chars / 256 bits, mandatory).",
+                                                "type": "string"
+                                            },
+                                            "timestamp": {
+                                                "description": "Unix timestamp in SECONDS included in the canonical message.\nWindow 30 seconds (compared against provii-verifier's 300-second\nwindow in its own HMAC verification). See `validate_timestamp`\nin `session.rs` and `TIMESTAMP_WINDOW_SECONDS = 30`.",
+                                                "format": "uint64",
+                                                "minimum": 0,
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "required": [
+                                            "format",
+                                            "keyId",
+                                            "timestamp",
+                                            "hmac",
+                                            "nonce"
+                                        ],
+                                        "type": "object"
+                                    }
+                                },
+                                "additionalProperties": false,
+                                "description": "Request payload for creating a DOB attestation.\n\n# Security (ASVS 5.0 / MASVS 2.0)\n- Officer authentication via HMAC (same as existing issuance flow)\n- Ed25519 signing key retrieved from secure storage\n- Attestation signed with issuer-specific key\n\nIV-205: deny_unknown_fields prevents unexpected fields in external input.",
+                                "properties": {
+                                    "authorizer": {
+                                        "$ref": "#/$defs/Authorizer",
+                                        "description": "Authentication material (HMAC auth for officer)."
+                                    },
+                                    "dob_days": {
+                                        "description": "Days since Unix epoch representing date of birth.\nNegative values represent dates before 1970-01-01 (e.g. -25000 ~ 1901).",
+                                        "format": "int32",
+                                        "type": "integer"
+                                    }
+                                },
+                                "required": [
+                                    "dob_days",
+                                    "authorizer"
+                                ],
+                                "title": "CreateAttestationRequest",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "description": "Response payload for successful attestation creation.",
+                                    "properties": {
+                                        "attestation": {
+                                            "description": "Base64url-encoded DobAttestation containing Ed25519 signature.",
+                                            "type": "string"
+                                        },
+                                        "expires_at": {
+                                            "description": "Unix timestamp when this attestation expires (1 hour from creation).",
+                                            "format": "uint64",
+                                            "minimum": 0,
+                                            "type": "integer"
+                                        },
+                                        "issuer_id": {
+                                            "description": "Issuer identifier that signed this attestation.",
+                                            "type": "string"
+                                        }
+                                    },
+                                    "required": [
+                                        "attestation",
+                                        "expires_at",
+                                        "issuer_id"
+                                    ],
+                                    "title": "CreateAttestationResponse",
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Attestation created successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Bad request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Rate limit exceeded",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "Seconds until the rate limit resets",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    }
+                },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "summary": "Create blind attestation",
+                "tags": [
+                    "Attestation"
+                ]
+            }
+        },
+        "/v1/challenge": {
+            "post": {
+                "description": "Creates a HMAC-SHA1 challenge for YubiKey officer authentication. The officer must respond with the correct HMAC to prove possession of the YubiKey.",
+                "operationId": "createOfficerChallenge",
+                "parameters": [
+                    {
+                        "description": "API key issued to the issuing organisation",
+                        "in": "header",
+                        "name": "X-API-Key",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "additionalProperties": false,
+                                "description": "Request body for provisioning a YubiKey challenge.\nIV-205: deny_unknown_fields prevents unexpected fields in external input.",
+                                "properties": {
+                                    "officer_id": {
+                                        "description": "Officer identifier expecting to answer the challenge.",
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "officer_id"
+                                ],
+                                "title": "ChallengeRequest",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "description": "Response payload containing the generated challenge material.",
+                                    "properties": {
+                                        "challenge": {
+                                            "description": "Hex-encoded challenge bytes delivered to the client device.",
+                                            "type": "string"
+                                        },
+                                        "challenge_id": {
+                                            "description": "Server-issued challenge identifier.",
+                                            "type": "string"
+                                        },
+                                        "expires_at": {
+                                            "description": "Absolute expiration timestamp for the challenge.",
+                                            "format": "int64",
+                                            "type": "integer"
+                                        }
+                                    },
+                                    "required": [
+                                        "challenge_id",
+                                        "challenge",
+                                        "expires_at"
+                                    ],
+                                    "title": "ChallengeResponse",
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Challenge created"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Bad request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Rate limit exceeded",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "Seconds until the rate limit resets",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    }
+                },
+                "security": [
+                    {
+                        "ApiKeyAuth": []
+                    }
+                ],
+                "summary": "Create officer challenge",
+                "tags": [
+                    "Issuance"
+                ]
+            }
+        },
+        "/v1/docs": {
+            "get": {
+                "description": "Interactive API documentation rendered from the OpenAPI specification",
+                "operationId": "apiDocs",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "text/html": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "HTML documentation page"
+                    }
+                },
+                "security": [],
+                "summary": "API documentation",
+                "tags": [
+                    "Meta"
+                ]
+            }
+        },
+        "/v1/issuance/blind": {
+            "post": {
+                "description": "Issues a credential using blind attestation. The user provides an attestation (from QR scan) and generates r_bits locally, ensuring the officer never sees the commitment C.\n\n**Forward-compatibility policy:** the request envelope does not apply `additionalProperties: false`. Unknown top-level fields are silently dropped on the server so future envelope additions roll out without a wire-format break. Field-level validation (length caps, base64 charset, schema URL form) is enforced individually via the `attestation`, `r_bits`, `schema`, and `validity_days` constraints below; the `validate` attributes on the Rust `BlindIssuanceRequest` type are the source of truth.",
+                "operationId": "blindIssuance",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "additionalProperties": true,
+                                "description": "Forward-compatible envelope. `additionalProperties: true` documents the intentional omission of `serde(deny_unknown_fields)` on the Rust type so new fields can land without breaking existing clients.",
+                                "properties": {
+                                    "attestation": {
+                                        "description": "Base64url-encoded attestation from QR code",
+                                        "maxLength": 1000,
+                                        "type": "string"
+                                    },
+                                    "r_bits": {
+                                        "description": "Base64url-encoded random bits for commitment blinding (generated by wallet)",
+                                        "maxLength": 64,
+                                        "type": "string"
+                                    },
+                                    "schema": {
+                                        "description": "Optional schema URL override. Defaults to provii.age/0.",
+                                        "maxLength": 500,
+                                        "type": "string"
+                                    },
+                                    "validity_days": {
+                                        "description": "Optional credential validity in days, bounded by issuer policy. Defaults to 36500 (lifetime).",
+                                        "maximum": 36500,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                    }
+                                },
+                                "required": [
+                                    "attestation",
+                                    "r_bits"
+                                ],
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$defs": {
+                                        "SignedCredentialHeader": {
+                                            "description": "Public header returned after a commitment is signed.",
+                                            "properties": {
+                                                "c_bytes": {
+                                                    "contentEncoding": "base64url",
+                                                    "contentMediaType": "application/octet-stream",
+                                                    "description": "Commitment bytes included in the credential.",
+                                                    "maxLength": 43,
+                                                    "minLength": 43,
+                                                    "type": "string"
+                                                },
+                                                "exp": {
+                                                    "description": "Credential expiry timestamp.",
+                                                    "format": "uint64",
+                                                    "minimum": 0,
+                                                    "type": "integer"
+                                                },
+                                                "iat": {
+                                                    "description": "Credential issuance timestamp.",
+                                                    "format": "uint64",
+                                                    "minimum": 0,
+                                                    "type": "integer"
+                                                },
+                                                "issuer_vk": {
+                                                    "contentEncoding": "base64url",
+                                                    "contentMediaType": "application/octet-stream",
+                                                    "description": "Issuer verification key material.",
+                                                    "maxLength": 43,
+                                                    "minLength": 43,
+                                                    "type": "string"
+                                                },
+                                                "kid": {
+                                                    "description": "Key identifier used to produce the signature.",
+                                                    "type": "string"
+                                                },
+                                                "schema": {
+                                                    "description": "Schema identifier describing the credential contents.",
+                                                    "type": "string"
+                                                },
+                                                "sig_rj": {
+                                                    "contentEncoding": "base64url",
+                                                    "contentMediaType": "application/octet-stream",
+                                                    "description": "RedJubjub signature bytes.",
+                                                    "maxLength": 86,
+                                                    "minLength": 86,
+                                                    "type": "string"
+                                                },
+                                                "v": {
+                                                    "description": "Data structure version number.",
+                                                    "format": "uint8",
+                                                    "maximum": 255,
+                                                    "minimum": 0,
+                                                    "type": "integer"
+                                                }
+                                            },
+                                            "required": [
+                                                "v",
+                                                "kid",
+                                                "issuer_vk",
+                                                "sig_rj",
+                                                "c_bytes",
+                                                "iat",
+                                                "exp",
+                                                "schema"
+                                            ],
+                                            "type": "object"
+                                        }
+                                    },
+                                    "description": "Response payload for successful blind issuance.",
+                                    "properties": {
+                                        "credential": {
+                                            "$ref": "#/$defs/SignedCredentialHeader",
+                                            "description": "The signed credential header containing the commitment and RedJubjub signature."
+                                        }
+                                    },
+                                    "required": [
+                                        "credential"
+                                    ],
+                                    "title": "BlindIssuanceResponse",
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Credential issued successfully"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Bad request - invalid attestation or r_bits"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized - invalid or expired attestation"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Internal server error"
+                    }
+                },
+                "security": [],
+                "summary": "Blind credential issuance",
+                "tags": [
+                    "Issuance"
+                ]
+            }
+        },
+        "/v1/jwks.json": {
+            "get": {
+                "description": "Redirects to the canonical /.well-known/jwks.json location with a 301 Moved Permanently response.",
+                "operationId": "getJwksRedirect",
+                "responses": {
+                    "301": {
+                        "description": "Moved Permanently to /.well-known/jwks.json",
+                        "headers": {
+                            "Location": {
+                                "description": "Canonical JWKS location",
+                                "schema": {
+                                    "example": "/.well-known/jwks.json",
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                },
+                "security": [],
+                "summary": "Get JWKS (redirect)",
+                "tags": [
+                    "JWKS"
+                ]
+            }
+        },
+        "/v1/openapi.json": {
+            "get": {
+                "description": "Returns this OpenAPI specification document",
+                "operationId": "openapiSpec",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "OpenAPI 3.1.0 specification"
+                    }
+                },
+                "security": [],
+                "summary": "OpenAPI specification",
+                "tags": [
+                    "Meta"
+                ]
+            }
+        }
+    },
+    "servers": [
+        {
+            "description": "Production server",
+            "url": "https://issuer.provii.app"
+        }
+    ],
+    "tags": [
+        {
+            "description": "Blind attestation creation for officers and clients",
+            "name": "Attestation"
+        },
+        {
+            "description": "Blind credential issuance for wallet users",
+            "name": "Issuance"
+        },
+        {
+            "description": "Service-to-service endpoints (not for external callers)",
+            "name": "Internal"
+        },
+        {
+            "description": "Administrative endpoints (requires admin API key)",
+            "name": "Admin"
+        },
+        {
+            "description": "JSON Web Key Set endpoints",
+            "name": "JWKS"
+        },
+        {
+            "description": "API documentation endpoints",
+            "name": "Meta"
+        },
+        {
+            "description": "Health checks, metrics, and monitoring",
+            "name": "Operations"
+        }
+    ]
+}

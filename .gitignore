@@ -1,0 +1,68 @@
+# Environment files - NEVER commit these
+.env
+.env.*
+!.env.example
+
+# Local development secrets
+*.secret
+secrets/
+
+# Wrangler state
+.wrangler/
+.dev.vars
+
+# Build artifacts
+/build/
+/target/
+**/target/
+/node_modules/
+/dist/
+/pkg/
+*.wasm
+*.wasm.map
+
+# Rust build artifacts
+debug/
+release/
+incremental/
+.cargo/
+Cargo.lock.msrv
+
+# WASM build outputs
+*.wat
+*.wast
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.backup
+*.bak
+
+# SBOM and backup files
+sbom.json
+sbom-*.json
+backups/
+*.enc
+
+# Migration/status files
+MIGRATION*.md
+MIGRATION*.txt
+PLAN*.md
+WEEK*.md
+FILES_CHANGED*.txt
+*_SETUP.sh
+migrate_*.sh
+
+
+tools/key-rotation/target/
