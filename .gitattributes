@@ -1,0 +1,28 @@
+# Auto-detect text files and normalise line endings
+* text=auto
+
+# Rust sources
+*.rs text diff=rust
+*.toml text
+Cargo.lock text -diff
+
+# Shell scripts must use LF
+*.sh text eol=lf
+
+# Workflow files must use LF
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Web/JS assets
+*.js text
+*.mjs text
+*.json text
+
+# Documentation
+*.md text
+
+# Binary files
+*.wasm binary
+*.png binary
+*.jpg binary
+*.ico binary

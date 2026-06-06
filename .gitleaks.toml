@@ -1,0 +1,13 @@
+# Gitleaks config — extend default ruleset; allowlist files whose ONLY matches are
+# deterministic test fixtures / vectors (verified: every hit is a #[cfg(test)] constant
+# or a canonical message vector, never a real credential). All other paths are scanned.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test-fixture constants and canonical vectors (fake secrets, not credentials)."
+paths = [
+  '''^src/durable_objects/resource_lock\.rs$''',
+  '''^src/storage\.rs$''',
+  '''^tests/fixtures/canonical_message_vectors\.json$''',
+]

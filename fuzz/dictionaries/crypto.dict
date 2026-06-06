@@ -1,0 +1,12 @@
+# Hex strings (HMAC output lengths)
+"0000000000000000000000000000000000000000"
+"ffffffffffffffffffffffffffffffffffffffff"
+"00000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# Key sizes
+"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"
+
+# Nonce hex (64 hex chars)
+"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"0000000000000000000000000000000000000000000000000000000000000000"

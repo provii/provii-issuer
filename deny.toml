@@ -1,0 +1,126 @@
+# cargo-deny configuration for license and security compliance
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+# Deny yanked crates globally. Matches provii-crypto's policy.
+# core2 0.3.3 is a yanked transitive dep via sapling-crypto 0.5.0
+# (provii-crypto-commit at v0.1.0). The RUSTSEC-2026-0105 ignore lets
+# cargo-deny accept the pinned lockfile entry. sapling-crypto 0.7.x
+# drops core2 entirely; this ignore expires when the v0.1.0 tag is
+# superseded.
+yanked = "deny"
+# Ignore specific advisories (use sparingly and document why)
+# Each ignore MUST include:
+#   1. The advisory ID
+#   2. Which crate brings it in
+#   3. Why it's acceptable to ignore
+#   4. Review date
+ignore = [
+  # RUSTSEC-2026-0105: core2 - all versions yanked
+  # Source: Transitive via sapling-crypto 0.5.0 (provii-crypto-commit v0.1.0)
+  # Risk Assessment: core2 provides `no_std` Read/Write shims; the yanking
+  # was administrative (upstream merged into the std facade). No security
+  # vulnerability. Pinned to 0.3.3 in Cargo.lock.
+  # Mitigation: sapling-crypto 0.7.x drops core2. Upgrade tracked.
+  # Expiry: 2026-07-31
+  # Review date: 2026-06-02
+  "RUSTSEC-2026-0105",
+  { crate = "core2@0.3.3", reason = "All versions yanked; sapling-crypto 0.7.x drops core2. Expiry: 2026-07-31" },
+
+  # RUSTSEC-2024-0436: paste crate - arbitrary code execution via proc-macro
+  # Source: Transitive dependency from serde_valid
+  # Risk Assessment: COMPILE-TIME ONLY. The paste crate is a procedural macro
+  # that only executes during compilation, not at runtime. The vulnerability
+  # requires a malicious Cargo.toml or build.rs, which would require compromising
+  # our repository. No runtime security impact on the deployed Worker.
+  # Mitigation: Consider migrating serde_valid -> garde crate in future.
+  # Review date: 2026-05-25
+  "RUSTSEC-2024-0436",
+
+  # RUSTSEC-2024-0370: proc-macro-error is unmaintained
+  # Source: Transitive dependency via proc-macro chain
+  # Risk Assessment: COMPILE-TIME ONLY. This is a procedural macro helper
+  # that only executes during compilation, not at runtime. The crate is
+  # unmaintained but has no known security vulnerabilities.
+  # Mitigation: Upstream dependencies should migrate to proc-macro-error2.
+  # Review date: 2026-01-27
+  "RUSTSEC-2024-0370",
+
+  # RUSTSEC-2026-0173: proc-macro-error2 unmaintained (successor to proc-macro-error
+  # 2024-0370). COMPILE-TIME ONLY proc-macro helper; no runtime security impact on
+  # the deployed Worker. Review date: 2026-06-09. Expiry: 2026-09-01
+  "RUSTSEC-2026-0173",
+]
+
+[licenses]
+version = 2
+# List of explicitly allowed licenses
+# In cargo-deny v2, anything not in `allow` is implicitly denied
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "Zlib",
+  "0BSD",
+  "Unlicense",
+  "CC0-1.0",
+  "AGPL-3.0",
+  "AGPL-3.0-only",
+  "LicenseRef-Proprietary",
+]
+# The confidence threshold for detecting a license from license text
+confidence-threshold = 0.8
+
+# Clarify licenses for private provii-* crates (relicensed to Apache-2.0 on 2026-04-02)
+[[licenses.clarify]]
+crate = "provii-crypto-commons"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "provii-crypto-sig-redjubjub"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "provii-crypto-commit"
+expression = "Apache-2.0"
+license-files = []
+
+[licenses.private]
+# If true, ignores workspace crates that aren't published
+ignore = true
+
+[bans]
+# Lint level for when multiple versions of the same crate are detected
+multiple-versions = "warn"
+# Lint level for when a crate version requirement is `*`
+wildcards = "deny"
+# Skip dependencies for workspaces
+workspace-default-features = "allow"
+external-default-features = "allow"
+# Specific crates to deny
+deny = []
+# Specific crates to skip checking
+skip = []
+# Specific crates to skip tree checking
+skip-tree = []
+
+[sources]
+# Lint level for what to happen when a crate from a git repository is encountered
+unknown-git = "deny"
+# Lint level for what to happen when a crate from a registry other than crates.io is encountered
+unknown-registry = "deny"
+# List of URLs for allowed crate registries
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git repositories are allowed via [sources.allow-org] below
+
+[sources.allow-org]
+# GitHub organizations to allow as sources
+github = ["provii"]

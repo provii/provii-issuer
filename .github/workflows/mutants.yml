@@ -1,0 +1,138 @@
+# Mutation testing for the Provii issuer
+# Runs cargo-mutants to verify test suite quality.
+# Schedule: weekly Monday 5 AM UTC. PR trigger: on src/**/*.rs changes.
+
+name: Mutation Testing
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**/*.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  mutants:
+    name: cargo-mutants
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    if: github.actor != 'dependabot[bot]'
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "ci-mutants"
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked --version =27.0.0
+
+      - name: Run cargo-mutants (PR, changed files only)
+        if: github.event_name == 'pull_request'
+        # Exit codes: 0 = all caught, 2 = some survived. The score gate
+        # below is authoritative for survivors, so exit 2 is not a job
+        # failure here. Any other code (1 = usage, 4 = baseline failed)
+        # is a genuine failure.
+        run: |
+          set -euo pipefail
+          # Only issuer-logic is host-testable; the root crate is a wasm32 Worker.
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD -- 'crates/issuer-logic/src/**/*.rs' | paste -sd, -)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No issuer-logic source files changed; skipping mutation testing."
+            exit 0
+          fi
+          # --in-place keeps the workspace's ../provii-crypto path deps resolvable
+          # (see the full-run step below for the rationale).
+          set +e
+          cargo mutants --in-place --package issuer-logic --timeout 300 --file "$CHANGED_FILES" -- --target x86_64-unknown-linux-gnu
+          ec=$?
+          set -e
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 2 ]; then
+            echo "::error::cargo-mutants exited $ec (build or baseline failure, not surviving mutants)"
+            exit "$ec"
+          fi
+
+      - name: Run cargo-mutants (scheduled, full)
+        if: github.event_name != 'pull_request'
+        # Exit codes: same as PR step. exit 2 = survivors, tolerated here.
+        run: |
+          set -euo pipefail
+          # Scope to issuer-logic. The root provii-issuer-worker crate is a
+          # wasm32 Worker and cannot build for the x86_64 host target.
+          # --in-place mutates the real tree so the workspace's relative path
+          # deps on ../provii-crypto stay resolvable; the default copy to /tmp
+          # breaks those relative paths and fails the unmutated baseline build.
+          set +e
+          cargo mutants --in-place --package issuer-logic --timeout 300 -- --target x86_64-unknown-linux-gnu
+          ec=$?
+          set -e
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 2 ]; then
+            echo "::error::cargo-mutants exited $ec (build or baseline failure, not surviving mutants)"
+            exit "$ec"
+          fi
+
+      - name: Enforce mutation score threshold
+        run: |
+          set -euo pipefail
+          THRESHOLD=70
+          OUTCOMES="mutants.out/outcomes.json"
+          if [ ! -f "$OUTCOMES" ]; then
+            echo "::warning::No outcomes.json found; cargo-mutants may have been skipped."
+            exit 0
+          fi
+          TOTAL=$(jq '[.outcomes[] | select(.scenario != "Baseline")] | length' "$OUTCOMES")
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::warning::Zero mutants generated; nothing to enforce."
+            exit 0
+          fi
+          CAUGHT=$(jq '[.outcomes[] | select(.scenario != "Baseline") | select(.summary == "CaughtMutant")] | length' "$OUTCOMES")
+          TIMEOUT=$(jq '[.outcomes[] | select(.scenario != "Baseline") | select(.summary == "Timeout")] | length' "$OUTCOMES")
+          KILLED=$((CAUGHT + TIMEOUT))
+          SCORE=$(echo "scale=2; $KILLED * 100 / $TOTAL" | bc)
+          echo "Mutation score: ${SCORE}% (${KILLED}/${TOTAL} killed)"
+          echo "## Mutation Testing" >> $GITHUB_STEP_SUMMARY
+          echo "Score: **${SCORE}%** (${KILLED}/${TOTAL} mutants killed, threshold ${THRESHOLD}%)" >> $GITHUB_STEP_SUMMARY
+          if (( $(echo "$SCORE < $THRESHOLD" | bc -l) )); then
+            echo "::error::Mutation score ${SCORE}% is below threshold of ${THRESHOLD}%"
+            exit 1
+          fi
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-results
+          path: mutants.out/
+          retention-days: 14
+          if-no-files-found: ignore

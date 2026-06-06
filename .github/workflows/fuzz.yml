@@ -1,0 +1,169 @@
+name: Weekly Fuzzing
+
+on:
+  schedule:
+    # Run every Saturday at 3 AM UTC
+    - cron: '0 3 * * 6'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzzing duration in seconds per target'
+        required: false
+        default: '300'
+        type: string
+      target:
+        description: 'Specific target to fuzz (leave empty for all)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  FUZZ_DURATION: ${{ github.event.inputs.duration || '300' }}
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_hmac_verification
+          - fuzz_base64_serde
+          - fuzz_json_parsing
+          - fuzz_routes_validation
+          - fuzz_storage_kvparse
+          - fuzz_canonical_messages
+          - fuzz_session_lifecycle
+          - fuzz_redjubjub_signing
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # nightly
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "fuzz"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Check if target matches filter
+        id: check
+        # Pass workflow_dispatch inputs and matrix values via env to avoid
+        # template-injection: GitHub expressions are interpolated into the
+        # script body before execution, so a maliciously-named matrix
+        # target (or input) could otherwise inject shell metacharacters.
+        env:
+          INPUT_TARGET: ${{ github.event.inputs.target }}
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          if [ -z "$INPUT_TARGET" ] || [ "$INPUT_TARGET" = "$MATRIX_TARGET" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run fuzzer
+        if: steps.check.outputs.run == 'true'
+        working-directory: fuzz
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_DUR: ${{ env.FUZZ_DURATION }}
+        run: |
+          echo "Fuzzing ${FUZZ_TARGET} for ${FUZZ_DUR} seconds..."
+          cargo +nightly fuzz run "${FUZZ_TARGET}" -- \
+            -max_total_time="${FUZZ_DUR}" \
+            -jobs=2 \
+            -workers=2 \
+            || (
+              echo "::error::Fuzzer found a crash in ${FUZZ_TARGET}"
+              exit 1
+            )
+
+      - name: Upload corpus and crash artifacts
+        # AUD-IA-21-013: Always upload corpus to preserve coverage gains across runs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/corpus/${{ matrix.target }}/
+          retention-days: 30
+
+      - name: Generate fuzzing summary
+        if: always()
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_DUR: ${{ env.FUZZ_DURATION }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          echo "## Fuzzing Summary: ${FUZZ_TARGET}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Duration**: ${FUZZ_DUR} seconds" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Status**: ${JOB_STATUS}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "fuzz/corpus/${FUZZ_TARGET}" ]; then
+            CORPUS_SIZE=$(find "fuzz/corpus/${FUZZ_TARGET}" -type f | wc -l || echo "0")
+            echo "- **Corpus size**: $CORPUS_SIZE inputs" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  coverage-report:
+    name: Generate Fuzzing Coverage Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [fuzz]
+    if: always()
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Generate report
+        env:
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+        run: |
+          echo "## Weekly Fuzzing Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_hmac_verification | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_base64_serde | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_json_parsing | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_routes_validation | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_storage_kvparse | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_canonical_messages | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_session_lifecycle | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| fuzz_redjubjub_signing | ${FUZZ_RESULT} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "For detailed results, check individual job outputs." >> $GITHUB_STEP_SUMMARY

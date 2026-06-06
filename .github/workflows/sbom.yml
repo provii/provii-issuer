@@ -1,0 +1,143 @@
+name: SBOM Generation
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/dependabot.yml'
+      - '.github/CODEOWNERS'
+      - '.gitignore'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  generate-sbom:
+    name: Generate Software Bill of Materials
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Clone public dependencies
+        run: |
+          git clone https://github.com/provii/provii-crypto.git --branch v0.1.0 ../provii-crypto
+          git clone https://github.com/provii/provii-audit.git --branch v0.1.0 ../provii-audit
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: "sbom"
+
+      - name: Install cargo-sbom
+        # AUD-IA-22-001: Pin to specific version for reproducibility
+        run: cargo install cargo-sbom --version '=0.9.1' --locked
+
+      - name: Generate SBOM in CycloneDX format
+        run: |
+          cargo sbom --output-format cyclone_dx_json_1_4 > sbom-cyclonedx.json
+
+      - name: Generate SBOM in SPDX format
+        run: |
+          cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
+
+      - name: Generate dependency tree
+        run: |
+          cargo tree --all-features --format "{p} {l}" > dependency-tree.txt
+
+      - name: Create SBOM summary
+        run: |
+          echo "# Software Bill of Materials" > SBOM-SUMMARY.md
+          echo "" >> SBOM-SUMMARY.md
+          echo "Generated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> SBOM-SUMMARY.md
+          echo "" >> SBOM-SUMMARY.md
+          echo "## Dependency Count" >> SBOM-SUMMARY.md
+          TOTAL_DEPS=$(cargo tree --all-features | wc -l)
+          echo "Total dependencies: $TOTAL_DEPS" >> SBOM-SUMMARY.md
+          echo "" >> SBOM-SUMMARY.md
+          echo "## Critical Dependencies" >> SBOM-SUMMARY.md
+          echo '```' >> SBOM-SUMMARY.md
+          cargo tree --depth 1 >> SBOM-SUMMARY.md
+          echo '```' >> SBOM-SUMMARY.md
+
+      - name: Validate SBOM files
+        run: |
+          # Check that SBOM files are valid JSON
+          jq empty sbom-cyclonedx.json
+          jq empty sbom-spdx.json
+          echo "SBOM files validated successfully"
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ github.sha }}
+          path: |
+            sbom-cyclonedx.json
+            sbom-spdx.json
+            dependency-tree.txt
+            SBOM-SUMMARY.md
+          retention-days: 90
+
+      - name: Create SBOM release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Pass `github.ref_name` via env so the tag name cannot be
+        # interpolated as shell. Tag names have a constrained
+        # character set in practice but the protocol allows characters
+        # that would expand under template substitution.
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tar -czf "sbom-${REF_NAME}.tar.gz" \
+            sbom-cyclonedx.json \
+            sbom-spdx.json \
+            dependency-tree.txt \
+            SBOM-SUMMARY.md
+
+      - name: Upload SBOM to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          files: sbom-${{ github.ref_name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SBOM report
+        run: |
+          echo "## SBOM Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "CycloneDX SBOM generated" >> $GITHUB_STEP_SUMMARY
+          echo "SPDX SBOM generated" >> $GITHUB_STEP_SUMMARY
+          echo "Dependency tree generated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat SBOM-SUMMARY.md >> $GITHUB_STEP_SUMMARY
