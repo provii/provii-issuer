@@ -167,7 +167,7 @@ jobs:
           limit-severities-for-sarif: "true"
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
@@ -222,7 +222,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Zizmor
-        uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
+        uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
         with:
           # `min-severity: high` keeps the zizmor job green while still
           # blocking on the categories the security review tracks
@@ -294,7 +294,7 @@ jobs:
 
       - name: Upload Semgrep SARIF results
         if: ${{ always() && env.HAS_SEMGREP_TOKEN == 'true' }}
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
