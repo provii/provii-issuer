@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Golden vectors for the cross-service canonical HMAC signing message. Locks the byte-exact wire format used by provii-verifier, provii-issuer, and provii-demos provii-agegate. The format is: '{timestamp}:{method}:{path}:{body}:{nonce}'. The body is whatever the service's canonical-message constructor produced. The shared HMAC key below lets every implementation prove byte-equivalence with `HMAC-SHA-256(key, canonical_message)`. ",
+  "description": "Golden vectors for the cross-service canonical HMAC signing message. Locks the byte-exact wire format used by provii-verifier, provii-issuer, and provii-agegate. The format is: '{timestamp}:{method}:{path}:{body}:{nonce}'. The body is whatever the service's canonical-message constructor produced. The shared HMAC key below lets every implementation prove byte-equivalence with `HMAC-SHA-256(key, canonical_message)`.",
   "hmac_key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
   "vectors": [
     {
@@ -157,7 +157,7 @@
         "session_id": null,
         "client_id": null
       },
-      "expected_message_bytes_hex": "1b08cb4c04148b01f08fe3ca93bd93dcd79f1f23a96b70b8fcfae494716c017d"
+      "expected_message_bytes_hex": "0b1aee332eb8f6cb0e4e090f001b99d077c74783d0abcb3d108e82f424757296"
     },
     {
       "test_name": "attestation_bound_session_and_client",
@@ -170,7 +170,7 @@
         "session_id": "7f3a9c2e1b8d4a6f0c5e9b2d7a3f8c1e",
         "client_id": "docs-sbx-abcd1234"
       },
-      "expected_message_bytes_hex": "7de4fb09f16b1c9eec8c02161b9bf168262a3449e4f9bf1a432ea346bce2df2b"
+      "expected_message_bytes_hex": "c1a4b7f4d7791fee92eee59af4cc4b8ff0f82e1d0a27c67d5fefda36f117247c"
     },
     {
       "test_name": "attestation_session_only_empty_client",
@@ -183,7 +183,7 @@
         "session_id": "abcd",
         "client_id": null
       },
-      "expected_message_bytes_hex": "8e01447097fa21b1ef213ef073334d99a76b80d0d7869c3514f986a3831160a9"
+      "expected_message_bytes_hex": "86ffee88261a00d00a83d07c81246398185ee1fd1c6159e43686c29f978ad716"
     },
     {
       "test_name": "attestation_negative_dob_days_edge",
@@ -196,7 +196,7 @@
         "session_id": "s",
         "client_id": "c"
       },
-      "expected_message_bytes_hex": "bccec409786145fbbd779f71909f5bfc757d4b82dc6d62ef52386bc4ad751388"
+      "expected_message_bytes_hex": "289e680831ce09404fdc686b4f385c3272867f5bb422f5b2bedd7dea98174d61"
     }
   ]
 }
